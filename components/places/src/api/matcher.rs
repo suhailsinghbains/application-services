@@ -303,81 +303,107 @@ struct OriginOrUrl<'query, 'conn> {
     conn: &'conn PlacesDb,
 }
 
+const WITH_ORIGIN_AUTOFILL_THRESHOLD: &str = r#"
+    WITH frecency_stats(count, sum, squares) AS (
+        SELECT
+            IFNULL(CAST((SELECT value FROM moz_meta WHERE key = "origin_frecency_count") AS REAL), 0.0),
+            IFNULL(CAST((SELECT value FROM moz_meta WHERE key = "origin_frecency_sum") AS REAL), 0.0),
+            IFNULL(CAST((SELECT value FROM moz_meta WHERE key = "origin_frecency_sum_of_squares") AS REAL), 0.0)
+    ),
+    autofill_frecency_threshold(value) AS (
+        SELECT
+            CASE count
+                WHEN 0 THEN 0.0
+                WHEN 1 THEN sum
+                ELSE (sum / count) + (:stddevMultiplier * sqrt((squares - ((sum * sum) / count)) / count))
+            END
+        FROM frecency_stats
+    )
+"#;
+
 impl<'query, 'conn> OriginOrUrl<'query, 'conn> {
     pub fn new(query: &'query str, conn: &'conn PlacesDb) -> OriginOrUrl<'query, 'conn> {
         OriginOrUrl { query, conn }
     }
 }
 
-const URL_SQL: &'static str = "
-    SELECT h.url as url,
-            :host || :remainder AS strippedURL,
-            h.frecency as frecency,
-            h.foreign_count > 0 AS bookmarked,
-            h.id as id,
-            :searchString AS searchString
-    FROM moz_places h
-    JOIN moz_origins o ON o.id = h.origin_id
-    WHERE o.rev_host = reverse_host(:host)
-            AND MAX(h.frecency, 0) >= :frecencyThreshold
-            AND h.hidden = 0
-            AND strip_prefix_and_userinfo(h.url) BETWEEN strippedURL AND strippedURL || X'FFFF'
-    UNION ALL
-    SELECT h.url as url,
-            :host || :remainder AS strippedURL,
-            h.frecency as frecency,
-            h.foreign_count > 0 AS bookmarked,
-            h.id as id,
-            :searchString AS searchString
-    FROM moz_places h
-    JOIN moz_origins o ON o.id = h.origin_id
-    WHERE o.rev_host = reverse_host(:host) || 'www.'
-            AND MAX(h.frecency, 0) >= :frecencyThreshold
-            AND h.hidden = 0
-            AND strip_prefix_and_userinfo(h.url) BETWEEN 'www.' || strippedURL AND 'www.' || strippedURL || X'FFFF'
-    ORDER BY h.frecency DESC, h.id DESC
-    LIMIT 1
-";
-const ORIGIN_SQL: &'static str = "
-    SELECT IFNULL(:prefix, prefix) || moz_origins.host || '/' AS url,
-            moz_origins.host || '/' AS displayURL,
-            frecency,
-            bookmarked,
-            id,
-            :searchString AS searchString
-    FROM (
-        SELECT host,
-                TOTAL(frecency) AS host_frecency,
-                (SELECT TOTAL(foreign_count) > 0 FROM moz_places
-                WHERE moz_places.origin_id = moz_origins.id) AS bookmarked
-        FROM moz_origins
-        WHERE host BETWEEN :searchString AND :searchString || X'FFFF'
-        GROUP BY host
-        HAVING host_frecency >= :frecencyThreshold
+lazy_static::lazy_static! {
+    static ref URL_SQL: String = format!("
+        {with_autofill_threshold}
+        SELECT h.url as url,
+                :host || :remainder AS strippedURL,
+                h.frecency as frecency,
+                h.foreign_count > 0 AS bookmarked,
+                h.id as id,
+                :searchString AS searchString
+        FROM moz_places h
+        JOIN moz_origins o ON o.id = h.origin_id
+        WHERE o.rev_host = reverse_host(:host)
+                AND MAX(h.frecency, 0) >= (SELECT value FROM autofill_frecency_threshold)
+                AND h.hidden = 0
+                AND strip_prefix_and_userinfo(h.url) BETWEEN strippedURL AND strippedURL || X'FFFF'
         UNION ALL
-        SELECT host,
-                TOTAL(frecency) AS host_frecency,
-                (SELECT TOTAL(foreign_count) > 0 FROM moz_places
-                WHERE moz_places.origin_id = moz_origins.id) AS bookmarked
-        FROM moz_origins
-        WHERE host BETWEEN 'www.' || :searchString AND 'www.' || :searchString || X'FFFF'
-        GROUP BY host
-        HAVING host_frecency >= :frecencyThreshold
-    ) AS grouped_hosts
-    JOIN moz_origins ON moz_origins.host = grouped_hosts.host
-    ORDER BY frecency DESC, id DESC
-    LIMIT 1
-";
+        SELECT h.url as url,
+                :host || :remainder AS strippedURL,
+                h.frecency as frecency,
+                h.foreign_count > 0 AS bookmarked,
+                h.id as id,
+                :searchString AS searchString
+        FROM moz_places h
+        JOIN moz_origins o ON o.id = h.origin_id
+        WHERE o.rev_host = reverse_host(:host) || 'www.'
+                AND MAX(h.frecency, 0) >= (SELECT value FROM autofill_frecency_threshold)
+                AND h.hidden = 0
+                AND strip_prefix_and_userinfo(h.url) BETWEEN 'www.' || strippedURL AND 'www.' || strippedURL || X'FFFF'
+        ORDER BY h.frecency DESC, h.id DESC
+        LIMIT 1",
+        with_autofill_threshold = WITH_ORIGIN_AUTOFILL_THRESHOLD,
+    );
 
+    static ref ORIGIN_SQL: String = format!("
+        {with_autofill_threshold}
+        SELECT IFNULL(:prefix, prefix) || moz_origins.host || '/' AS url,
+                moz_origins.host || '/' AS displayURL,
+                frecency,
+                bookmarked,
+                id,
+                :searchString AS searchString
+        FROM (
+            SELECT host,
+                    TOTAL(frecency) AS host_frecency,
+                    (SELECT TOTAL(foreign_count) > 0 FROM moz_places
+                    WHERE moz_places.origin_id = moz_origins.id) AS bookmarked
+            FROM moz_origins
+            WHERE host BETWEEN :searchString AND :searchString || X'FFFF'
+            GROUP BY host
+            HAVING host_frecency >= (SELECT value FROM autofill_frecency_threshold)
+            UNION ALL
+            SELECT host,
+                    TOTAL(frecency) AS host_frecency,
+                    (SELECT TOTAL(foreign_count) > 0 FROM moz_places
+                    WHERE moz_places.origin_id = moz_origins.id) AS bookmarked
+            FROM moz_origins
+            WHERE host BETWEEN 'www.' || :searchString AND 'www.' || :searchString || X'FFFF'
+            GROUP BY host
+            HAVING host_frecency >= (SELECT value FROM autofill_frecency_threshold)
+        ) AS grouped_hosts
+        JOIN moz_origins ON moz_origins.host = grouped_hosts.host
+        ORDER BY frecency DESC, id DESC
+        LIMIT 1",
+        with_autofill_threshold = WITH_ORIGIN_AUTOFILL_THRESHOLD,
+    );
+}
 impl<'query, 'conn> Matcher for OriginOrUrl<'query, 'conn> {
     fn search(&self, _: u32) -> Result<Vec<SearchResult>> {
+        // TODO: Find out if :stddevMultiplier/'origin_frecency_sum_of_squares' are worth keeping.
+        let stddev_multiplier = 0.0f64;
         Ok(if looks_like_origin(self.query) {
             self.conn.query_rows_and_then_named_cached(
-                ORIGIN_SQL,
+                &ORIGIN_SQL,
                 &[
                     (":prefix", &rusqlite::types::Null),
                     (":searchString", &self.query),
-                    (":frecencyThreshold", &-1i64),
+                    (":stddevMultiplier", &stddev_multiplier),
                 ],
                 SearchResult::from_origin_row,
             )?
@@ -386,12 +412,12 @@ impl<'query, 'conn> Matcher for OriginOrUrl<'query, 'conn> {
             let punycode_host = idna::domain_to_ascii(host).ok();
             let host_str = punycode_host.as_ref().map(|s| s.as_str()).unwrap_or(host);
             self.conn.query_rows_and_then_named_cached(
-                URL_SQL,
+                &URL_SQL,
                 &[
                     (":searchString", &self.query),
                     (":host", &host_str),
                     (":remainder", &remainder),
-                    (":frecencyThreshold", &-1i64),
+                    (":stddevMultiplier", &stddev_multiplier),
                 ],
                 SearchResult::from_url_row,
             )?
@@ -644,7 +670,7 @@ mod tests {
                 url: url.clone(),
                 title: "Example page 123".into(),
                 icon_url: None,
-                frecency: -1,
+                frecency: 0,
                 reasons: vec![],
             },
         )
@@ -679,7 +705,7 @@ mod tests {
                 url: Url::parse("http://example.com/").unwrap(),
                 title: "example.com/".into(),
                 icon_url: None,
-                frecency: -1,
+                frecency: 0,
                 reasons: vec![MatchReason::Origin],
             }]
         );
