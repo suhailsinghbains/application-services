@@ -17,7 +17,6 @@ extern crate serde_json;
 use std::time::Duration;
 
 use config::PushConfiguration;
-use crypto::get_bytes;
 use push_errors as error;
 use push_errors::ErrorKind::{AlreadyRegisteredError, CommunicationError, StorageError};
 use reqwest::header;
@@ -331,7 +330,7 @@ impl Connection for ConnectHttp {
             }
         };
         // verify the lengths of both lists match. Either side could have lost it's mind.
-        if let Some(stored) = store.get_channel_list(&uaid) {
+        if let Some(stored) = store.get_channel_list(&uaid)? {
             return Ok(remote == stored);
         } else {
             return Ok(remote.len() == 0);
@@ -349,12 +348,12 @@ impl Connection for ConnectHttp {
         }
         let mut results: HashMap<String, String> = HashMap::new();
         if let Some(uaid) = self.uaid.clone() {
-            if let Some(channels) = store.get_channel_list(&uaid) {
+            if let Some(channels) = store.get_channel_list(&uaid)? {
                 for channel in channels {
                     let info = self.subscribe(&channel, vapid_public_key, registration_token)?;
                     // TODO: fix this (or remove it when storage is not stubbed.)
                     // map_err() pukes with a can't infer type for F err
-                    store.update_record(&uaid, &channel, &info.endpoint)?;
+                    store.update_endpoint(&channel, &info.endpoint)?;
                     results.insert(channel, info.endpoint);
                 }
             }

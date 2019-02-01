@@ -9,7 +9,6 @@ extern crate crypto;
 extern crate hex;
 
 mod db;
-mod error;
 mod record;
 mod schema;
 mod types;

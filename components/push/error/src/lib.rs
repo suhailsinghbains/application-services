@@ -5,6 +5,8 @@
 use std::fmt;
 use std::result;
 
+use rusqlite;
+
 use failure::{Backtrace, Context, Fail};
 
 pub type Result<T> = result::Result<T, Error>;
@@ -36,6 +38,10 @@ impl Error {
     pub fn kind(&self) -> &ErrorKind {
         &*self.0.get_context()
     }
+
+    pub fn internal(msg: &str) -> Self {
+        ErrorKind::InternalError(msg.to_owned()).into()
+    }
 }
 
 impl From<ErrorKind> for Error {
@@ -62,10 +68,35 @@ impl From<openssl::error::ErrorStack> for Error {
     }
 }
 
+macro_rules! impl_from_error {
+    ($(($variant:ident, $type:ty)),+) => ($(
+        impl From<$type> for ErrorKind {
+            #[inline]
+            fn from(e: $type) -> ErrorKind {
+                ErrorKind::$variant(e)
+            }
+        }
+
+        impl From<$type> for Error {
+            #[inline]
+            fn from(e: $type) -> Error {
+                ErrorKind::from(e).into()
+            }
+        }
+    )*);
+}
+
+impl_from_error! {
+    (StorageSqlError, rusqlite::Error)
+}
+
 #[derive(Debug, Fail)]
 pub enum ErrorKind {
     #[fail(display = "General Error: {:?}", _0)]
     GeneralError(String),
+
+    #[fail(display = "Internal Error: {:?}", _0)]
+    InternalError(String),
 
     #[fail(display = "OpenSSL Error: {:?}", _0)]
     OpenSSLError(String),
@@ -78,4 +109,7 @@ pub enum ErrorKind {
 
     #[fail(display = "Storage Error: {:?}", _0)]
     StorageError(String),
+
+    #[fail(display = "Error executing SQL: {}", _0)]
+    StorageSqlError(#[fail(cause)] rusqlite::Error),
 }
