@@ -373,19 +373,39 @@ mod comms_test {
     use std::collections::HashMap;
 
     use hex;
+    use mockito::{mock, server_address};
+    use serde_json::json;
 
     use crypto::{get_bytes, Key};
 
     // TODO mock out the reqwest calls.
+
+    const DUMMY_UAID: &'static str = "abad1dea00000000aabbccdd00000000";
 
     // Local test SENDER_ID
     const SENDER_ID: &'static str = "308358850242";
 
     #[test]
     fn test_connect() {
+        let body = json!({
+            "uaid": DUMMY_UAID,
+            "channelID": "deadbeef00000000decafbad00000000",
+            "endpoint": "https://example.com/update",
+            "senderid": "quux",
+            "secret": "XXXX"
+        });
+        let ap_mock = mock(
+            "POST",
+            format!("/v1/gcm/{}/registration", SENDER_ID).as_ref(),
+        )
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(body.to_string())
+        .create();
+
         let mut config = PushConfiguration {
             http_protocol: Some("http".to_owned()),
-            server_host: String::from("localhost:8082"),
+            server_host: server_address().to_string(),
             application_id: Some(SENDER_ID.to_owned()),
             bridge_type: Some("gcm".to_owned()),
             ..Default::default()
@@ -396,7 +416,9 @@ mod comms_test {
         let response = conn
             .subscribe(&channelID, None, Some(registration_token))
             .unwrap();
-        // println!("{:?}", response);
+        ap_mock.assert();
+        assert_eq!(response.uaid, DUMMY_UAID);
+        println!("{:?}", response);
     }
 
 }

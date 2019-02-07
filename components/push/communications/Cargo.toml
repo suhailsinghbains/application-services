@@ -16,3 +16,6 @@ storage = {path="../storage"}
 push-errors = {path="../error"}
 crypto = {path="../crypto"}
 config = {path="../config"}
+
+[dev-dependencies]
+mockito = "0.15.1"
