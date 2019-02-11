@@ -2,7 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use crate::{errors::*, scoped_keys::ScopedKeysFlow, util, FirefoxAccount, RNG};
+use crate::{
+    errors::*,
+    scoped_keys::{ScopedKey, ScopedKeysFlow},
+    util, FirefoxAccount, RNG,
+};
 use ring::digest;
 use serde_derive::*;
 use std::{
@@ -101,8 +105,8 @@ impl FirefoxAccount {
     }
 
     fn oauth_flow(&mut self, mut url: Url, scopes: &[&str], wants_keys: bool) -> Result<String> {
-        let state = util::random_base64_url_string(&*RNG, 16)?;
-        let code_verifier = util::random_base64_url_string(&*RNG, 43)?;
+        let state = util::random_base64_url_string(16)?;
+        let code_verifier = util::random_base64_url_string(43)?;
         let code_challenge = digest::digest(&digest::SHA256, &code_verifier.as_bytes());
         let code_challenge = base64::encode_config(&code_challenge, base64::URL_SAFE_NO_PAD);
         url.query_pairs_mut()
@@ -199,21 +203,6 @@ impl FirefoxAccount {
         });
         self.maybe_call_persist_callback();
         Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ScopedKey {
-    pub kty: String,
-    pub scope: String,
-    /// URL Safe Base 64 encoded key.
-    pub k: String,
-    pub kid: String,
-}
-
-impl ScopedKey {
-    pub fn key_bytes(&self) -> Result<Vec<u8>> {
-        Ok(base64::decode_config(&self.k, base64::URL_SAFE_NO_PAD)?)
     }
 }
 

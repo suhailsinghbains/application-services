@@ -6,11 +6,13 @@
 pub use crate::browser_id::{SyncKeys, WebChannelResponse};
 #[cfg(feature = "browserid")]
 use crate::login_sm::LoginState;
-pub use crate::{config::Config, oauth::AccessTokenInfo, profile::Profile};
 use crate::{
+    commands::send_tab::SendTabPayload,
     errors::*,
-    oauth::{OAuthFlow, RefreshToken, ScopedKey},
+    oauth::{OAuthFlow, RefreshToken},
+    scoped_keys::ScopedKey,
 };
+pub use crate::{config::Config, device::Device, oauth::AccessTokenInfo, profile::Profile};
 use lazy_static::lazy_static;
 use ring::rand::SystemRandom;
 use serde_derive::*;
@@ -19,7 +21,9 @@ use url::Url;
 
 #[cfg(feature = "browserid")]
 mod browser_id;
+mod commands;
 mod config;
+mod device;
 pub mod errors;
 #[cfg(feature = "ffi")]
 pub mod ffi;
@@ -35,11 +39,12 @@ mod oauth;
 mod profile;
 mod scoped_keys;
 pub mod scopes;
+mod send_tab;
 mod state_persistence;
 mod util;
 
 lazy_static! {
-    static ref RNG: SystemRandom = SystemRandom::new();
+    pub static ref RNG: SystemRandom = SystemRandom::new();
 }
 
 #[cfg(feature = "browserid")]
@@ -67,6 +72,10 @@ pub(crate) struct StateV2 {
     login_state: LoginState,
     refresh_token: Option<RefreshToken>,
     scoped_keys: HashMap<String, ScopedKey>,
+    last_handled_command: Option<u64>,
+    // Remove serde(default) once we are V3.
+    #[serde(default)]
+    commands_data: HashMap<String, String>,
 }
 
 impl FirefoxAccount {
@@ -88,6 +97,8 @@ impl FirefoxAccount {
             login_state: LoginState::Unknown,
             refresh_token: None,
             scoped_keys: HashMap::new(),
+            last_handled_command: None,
+            commands_data: HashMap::new(),
         })
     }
 
@@ -124,6 +135,19 @@ impl FirefoxAccount {
         Ok(url)
     }
 
+    pub fn handle_push_message(&mut self, payload: PushPayload) -> Result<Vec<AccountEvent>> {
+        match payload {
+            PushPayload::CommandReceived(_) => self.poll_remote_commands(),
+        }
+    }
+
+    fn get_refresh_token(&self) -> Result<&str> {
+        match self.state.refresh_token {
+            Some(ref token_info) => Ok(&token_info.token),
+            None => Err(ErrorKind::NoRefreshToken.into()),
+        }
+    }
+
     pub fn register_persist_callback(&mut self, persist_callback: PersistCallback) {
         self.persist_callback = Some(persist_callback);
     }
@@ -134,16 +158,19 @@ impl FirefoxAccount {
 
     fn maybe_call_persist_callback(&self) {
         if let Some(ref cb) = self.persist_callback {
-            let json = match self.to_json() {
-                Ok(json) => json,
-                Err(_) => {
-                    log::error!("Error with to_json in persist_callback");
-                    return;
-                }
+            match self.to_json() {
+                Ok(ref json) => cb.call(json),
+                Err(_) => log::error!("Error with to_json in persist_callback"),
             };
-            cb.call(&json);
         }
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "event")]
+pub enum AccountEvent {
+    // In the future: ProfileUpdated etc.
+    TabReceived((Option<Device>, SendTabPayload)),
 }
 
 pub struct PersistCallback {
@@ -169,6 +196,21 @@ pub(crate) struct CachedResponse<T> {
     response: T,
     cached_at: u64,
     etag: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "command", content = "data")]
+pub enum PushPayload {
+    #[serde(rename = "fxaccounts:command_received")]
+    CommandReceived(CommandReceivedPushPayload),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommandReceivedPushPayload {
+    command: String,
+    index: u64,
+    sender: String,
+    url: String,
 }
 
 #[cfg(test)]
@@ -201,5 +243,11 @@ mod tests {
             "https://stable.dev.lcip.org/connect_another_device?showSuccessMessage=true"
                 .to_string()
         );
+    }
+
+    #[test]
+    fn test_deserialize_push_message() {
+        let json = "{\"version\":1,\"command\":\"fxaccounts:command_received\",\"data\":{\"command\":\"send-tab-recv\",\"index\":1,\"sender\":\"bobo\",\"url\":\"https://mozilla.org\"}}";
+        let _: PushPayload = serde_json::from_str(&json).unwrap();
     }
 }

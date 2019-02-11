@@ -29,8 +29,8 @@ pub mod error_codes {
     /// Catch-all error code used for anything that's not a panic or covered by AUTHENTICATION.
     pub const OTHER: i32 = 1;
 
-    /// Used for `ErrorKind::NotMarried`, `ErrorKind::NoCachedTokens`, and `ErrorKind::RemoteError`'s
-    /// where `code == 401`.
+    /// Used for `ErrorKind::NotMarried`, `ErrorKind::NoCachedTokens`, `ErrorKind::NoCachedKey`
+    /// and `ErrorKind::RemoteError`'s where `code == 401`.
     pub const AUTHENTICATION: i32 = 2;
 
     /// Code for network errors.
@@ -41,6 +41,8 @@ fn get_code(err: &Error) -> ErrorCode {
     match err.kind() {
         ErrorKind::RemoteError { code: 401, .. }
         | ErrorKind::NotMarried
+        | ErrorKind::NoRefreshToken
+        | ErrorKind::NoCachedKey(_)
         | ErrorKind::NoCachedToken(_) => {
             log::warn!("Authentication error: {:?}", err);
             ErrorCode::new(error_codes::AUTHENTICATION)
