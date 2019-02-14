@@ -20,7 +20,7 @@ use ece::{
 use openssl::rand::rand_bytes;
 mod error;
 
-const SER_AUTH_LENGTH: usize = 16;
+pub const SER_AUTH_LENGTH: usize = 16;
 
 /* build the key off of the OpenSSL key implementation.
  * Much of this is taken from rust_ece/crypto/openssl/lib.rs

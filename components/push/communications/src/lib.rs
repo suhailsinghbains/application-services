@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use config::PushConfiguration;
 use push_errors as error;
-use push_errors::ErrorKind::{AlreadyRegisteredError, CommunicationError};
+use push_errors::ErrorKind::{AlreadyRegisteredError, CommunicationError, CommunicationServerError};
 use reqwest::header;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -46,6 +46,8 @@ pub enum BroadcastValue {
     Nested(HashMap<String, BroadcastValue>),
 }
 
+/// A new communication link to the Autopush server
+///
 pub trait Connection {
     // get the connection UAID
     // TODO [conv]: reset_uaid(). This causes all known subscriptions to be reset.
@@ -61,14 +63,14 @@ pub trait Connection {
     // Drop an endpoint
     fn unsubscribe(&self, channelid: Option<&str>) -> error::Result<bool>;
 
-    // Update an endpoint with new info
+    // Update the autopush server with the new native OS Messaging authorization token
     fn update(&self, new_token: &str) -> error::Result<bool>;
 
-    // Get a list of server known channels. If it differs from what we have, reset the UAID, and refresh channels.
-    // Should be done once a day.
+    // Get a list of server known channels.
     fn channel_list(&self) -> error::Result<Vec<String>>;
 
-    // Verify that the known channel list matches up with the server list.
+    // Verify that the known channel list matches up with the server list. If this fails, regenerate endpoints.
+    // This should be performed once a day.
     fn verify_connection(&self, channels: &[String]) -> error::Result<bool>;
 
     // Regenerate the subscription info for all known, registered channelids
@@ -92,6 +94,8 @@ pub trait Connection {
     //impl TODO: Handle an incoming Notification
 }
 
+
+/// Connect to the Autopush server via the HTTP interface
 pub struct ConnectHttp {
     options: PushConfiguration,
     client: reqwest::Client,
@@ -163,12 +167,12 @@ impl Connection for ConnectHttp {
         let mut request = match self.client.post(&url).json(&body).send() {
             Ok(v) => v,
             Err(e) => {
-                return Err(CommunicationError(format!("Could not fetch endpoint: {:?}", e)).into());
+                return Err(CommunicationServerError(format!("Could not fetch endpoint: {:?}", e)).into());
             }
         };
         if request.status().is_server_error() {
             dbg!(request);
-            return Err(CommunicationError("Server error".to_string()).into());
+            return Err(CommunicationServerError("General Server error".to_string()).into());
         }
         if request.status().is_client_error() {
             dbg!(&request);
@@ -180,7 +184,7 @@ impl Connection for ConnectHttp {
         let response: Value = match request.json() {
             Ok(v) => v,
             Err(e) => {
-                return Err(CommunicationError(format!("Could not parse response: {:?}", e)).into());
+                return Err(CommunicationServerError(format!("Could not parse response: {:?}", e)).into());
             }
         };
 
@@ -224,7 +228,7 @@ impl Connection for ConnectHttp {
             .send()
         {
             Ok(_) => Ok(true),
-            Err(e) => Err(CommunicationError(format!("Could not unsubscribe: {:?}", e)).into()),
+            Err(e) => Err(CommunicationServerError(format!("Could not unsubscribe: {:?}", e)).into()),
         }
     }
 
@@ -257,7 +261,7 @@ impl Connection for ConnectHttp {
             .send()
         {
             Ok(_) => Ok(true),
-            Err(e) => Err(CommunicationError(format!("Could not update token: {:?}", e)).into()),
+            Err(e) => Err(CommunicationServerError(format!("Could not update token: {:?}", e)).into()),
         }
     }
 
@@ -297,13 +301,13 @@ impl Connection for ConnectHttp {
             Ok(v) => v,
             Err(e) => {
                 return Err(
-                    CommunicationError(format!("Could not fetch channel list: {:?}", e)).into(),
+                    CommunicationServerError(format!("Could not fetch channel list: {:?}", e)).into(),
                 );
             }
         };
         if request.status().is_server_error() {
             dbg!(request);
-            return Err(CommunicationError("Server error".to_string()).into());
+            return Err(CommunicationServerError("Server error".to_string()).into());
         }
         if request.status().is_client_error() {
             dbg!(&request);
@@ -312,7 +316,7 @@ impl Connection for ConnectHttp {
         let payload: Payload = match request.json() {
             Ok(p) => p,
             Err(e) => {
-                return Err(CommunicationError(format!(
+                return Err(CommunicationServerError(format!(
                     "Could not fetch channel_list: Bad Response {:?}",
                     e
                 ))
@@ -320,7 +324,7 @@ impl Connection for ConnectHttp {
             }
         };
         if payload.uaid != self.uaid.clone().unwrap() {
-            return Err(CommunicationError("Invalid Response from server".to_string()).into());
+            return Err(CommunicationServerError("Invalid Response from server".to_string()).into());
         }
         Ok(payload.channel_ids.clone())
     }

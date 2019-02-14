@@ -92,24 +92,35 @@ impl_from_error! {
 
 #[derive(Debug, Fail)]
 pub enum ErrorKind {
+    /// An unspecified general error has occured
     #[fail(display = "General Error: {:?}", _0)]
     GeneralError(String),
 
+    /// An unspecifed Internal processing error has occurred
     #[fail(display = "Internal Error: {:?}", _0)]
     InternalError(String),
 
+    /// An unknown OpenSSL Cryptography error
     #[fail(display = "OpenSSL Error: {:?}", _0)]
     OpenSSLError(String),
 
+    /// A Client communication error
     #[fail(display = "Communication Error: {:?}", _0)]
     CommunicationError(String),
 
+    /// An error returned from the registration Server
+    #[fail(display = "Communication Server Error: {:?}", _0)]
+    CommunicationServerError(String),
+
+    /// Channel is already registered, generate new channelID
     #[fail(display = "Channel already registered.")]
     AlreadyRegisteredError,
 
+    /// An error with Storage
     #[fail(display = "Storage Error: {:?}", _0)]
     StorageError(String),
 
+    /// A failure to encode data to/from storage.
     #[fail(display = "Error executing SQL: {}", _0)]
     StorageSqlError(#[fail(cause)] rusqlite::Error),
 }
