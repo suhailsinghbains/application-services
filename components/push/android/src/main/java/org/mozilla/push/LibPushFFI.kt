@@ -39,59 +39,51 @@ internal interface LibPushFFI : Library {
     // String will work but either force us to leak them, or cause us to corrupt the heap (when we
     // free them).
 
-    /* From places
-    / ** Create a new push connection */
+    /** Create a new push connection */
     fun push_connection_new(
-            db_path: String,
-            encryption_key: String?,
+            server_host: String,
+            socket_protocol: String?,
+            bridge_type: String?,
+            application_id: String,
+            sender_id: String?,
             out_err: RustError.ByReference
     ): RawPushConnection?
 
-    / ** Returns JSON string, which you need to free with push_destroy_string */
-    fun push_note_observation(
+    /** Returns JSON string, which you need to free with push_destroy_string */
+    fun push_get_subscription_info(
             conn: RawPushConnection,
-            json_observation_data: String,
+            channel_id: String,
+            vapid_key: String?,
+            token: String?,
             out_err: RustError.ByReference
-    )
+    ): Pointer
 
-    / ** Returns JSON string, which you need to free with push_destroy_string */
-    fun push_query_autocomplete(
+    /** Returns bool */
+    fun push_unsubscribe(
             conn: RawPushConnection,
-            search: String,
-            limit: Int,
+            channel_id: String,
             out_err: RustError.ByReference
-    ): Pointer?
+    ): Bool?
 
-    fun push_get_visited(
+    fun push_update(
             conn: RawPushConnection,
-            urls_json: String,
+            new_token: String,
             out_err: RustError.ByReference
-    ): Pointer?
+    ): Bool?
 
-    fun push_get_visited_urls_in_range(
+    fun push_verify_connection(
             conn: RawPushConnection,
-            start: Long,
-            end: Long,
-            include_remote: Byte,
+            vapid_key: String?,
+            registration_token: String?,
             out_err: RustError.ByReference
-    ): Pointer?
+    ): Pointer
 
-    fun sync15_history_sync(
-            conn: RawPushConnection,
-            key_id: String,
-            access_token: String,
-            sync_key: String,
-            tokenserver_url: String,
-            out_err: RustError.ByReference
-    )
-
-    / ** Destroy strings returned from libpush_ffi calls. */
+    /** Destroy strings returned from libpush_ffi calls. */
     fun push_destroy_string(s: Pointer)
 
-    / ** Destroy connection created using `push_connection_new` */
+    /** Destroy connection created using `push_connection_new` */
     fun push_connection_destroy(obj: RawPushConnection)
 
-    */
 }
 
 class RawPushConnection : PointerType()

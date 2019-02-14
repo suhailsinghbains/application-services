@@ -13,102 +13,89 @@ import java.io.File
 /**
  * An implementation of a [PushAPI] backed by a Rust Push library.
  *
- * @param path an absolute path to a file that will be used for the internal database.
+ * @param server_host the host name for the service (e.g. "push.service.mozilla.org").
+ * @param socket_protocol the optional socket protocol (default: "https")
+ * @param bridge_type the optional bridge protocol (default: "fcm")
+ * @param application_id the native OS messaging registration id
  * @param encryption_key an optional key used for encrypting/decrypting data stored in the internal
  *  database. If omitted, data will be stored in plaintext.
- //* /
-
-class PushConnection(path: String, encryption_key: String? = null) : PushAPI, AutoCloseable {
-    private var db: RawPushConnection?
+ */
+class PushConnection(
+    application_id: String,
+    sender_id:String,
+    server_host: String?="push.service.mozilla.org", 
+    socket_protocol: String?="https",
+    bridge_type:String?="fcm",
+    encryption_key: String? = null) : PushAPI, AutoCloseable {
+    private var conn: RawPushConnection?
 
     init {
         try {
-            db = rustCall { error ->
-                LibPushFFI.INSTANCE.places_connection_new(path, encryption_key, error)
+            conn = rustCall { error ->
+                LibPushFFI.INSTANCE.push_connection_new(application_id, sender_id, server_host, socket_protocol, bridge_type)
             }
         } catch (e: InternalPanic) {
-
-            // Push Rust library does not yet support schema migrations; as a very temporary quick
-            // fix to avoid crashes of our upstream consumers, let's delete the database file
-            // entirely and try again.
-            // FIXME https://github.com/mozilla/application-services/issues/438
-            if (e.message != "sorry, no upgrades yet - delete your db!") {
-                throw e
-            }
-
-            File(path).delete()
-
-            db = rustCall { error ->
-                LibPushFFI.INSTANCE.places_connection_new(path, encryption_key, error)
-            }
+            // Do local error handling?
+            throw e
         }
     }
 
     @Synchronized
     override fun close() {
-        val db = this.db
-        this.db = null
-        if (db != null) {
-            LibPushFFI.INSTANCE.places_connection_destroy(db)
+
+        // todo: Cleanup.
+        val conn = this.conn
+        this.conn = null
+        if (conn != null) {
+            LibPushFFI.INSTANCE.push_connection_destroy(conn)
         }
     }
 
-    override fun noteObservation(data: VisitObservation) {
-        val json = data.toJSON().toString()
-        rustCall { error ->
-            LibPushFFI.INSTANCE.places_note_observation(this.db!!, json, error)
-        }
-    }
-
-    override fun queryAutocomplete(query: String, limit: Int): List<SearchResult> {
+    override fun getSubscriptionInfo(
+        channelID: String,
+        vapidKey: String,
+        token: String,
+        ): SubscriptionInfo {
         val json = rustCallForString { error ->
-            LibPushFFI.INSTANCE.places_query_autocomplete(this.db!!, query, limit, error)
+            LibPushFFI.INSTANCE.push_get_subscription_info(
+                this.conn!!, channelID, vapidKey, token, error)
         }
-        return SearchResult.fromJSONArray(json)
+        return SubscriptionInfo.fromJSON(json)
     }
 
-    override fun getVisited(urls: List<String>): List<Boolean> {
-        val urlsToJson = JSONArray()
-        for (url in urls) {
-            urlsToJson.put(url)
-        }
-        val urlStr = urlsToJson.toString()
-        val visitedStr = rustCallForString { error ->
-            LibPushFFI.INSTANCE.places_get_visited(this.db!!, urlStr, error)
-        }
-        val visited = JSONArray(visitedStr)
-        val result = mutableListOf<Boolean>()
-        for (index in 0 until visited.length()) {
-            result.add(visited.getBoolean(index))
+    override fun unsubscribe(channelID: String): Bool {
+        val result = rustCall { error ->
+            LibPushFFI.INSTANCE.push_unsubscribe(
+                this.conn!!, channelID, error)
         }
         return result
     }
 
-    override fun getVisitedUrlsInRange(start: Long, end: Long, includeRemote: Boolean): List<String> {
-        val urlsJson = rustCallForString { error ->
-            val incRemoteArg: Byte = if (includeRemote) { 1 } else { 0 }
-            LibPushFFI.INSTANCE.places_get_visited_urls_in_range(
-                    this.db!!, start, end, incRemoteArg, error)
-        }
-        val arr = JSONArray(urlsJson)
-        val result = mutableListOf<String>();
-        for (idx in 0 until arr.length()) {
-            result.add(arr.getString(idx))
+    override fun update(new_token: String): Bool {
+        val result = rustCall { error ->
+            LibPushFFI.INSTANCE.push_update(
+                this.conn!!, new_token, error)
         }
         return result
     }
 
-    override fun sync(syncInfo: SyncAuthInfo) {
-        rustCall { error ->
-            LibPushFFI.INSTANCE.sync15_history_sync(
-                    this.db!!,
-                    syncInfo.kid,
-                    syncInfo.fxaAccessToken,
-                    syncInfo.syncKey,
-                    syncInfo.tokenserverURL,
-                    error
-            )
+
+    override fun verifyConnection(
+        vapid_key: String,
+        registration_token: String,
+        ): Map<String, String> {
+        val newEndpoints: MutableMap<String, String> = linkedMapOf();
+        val response = rustCallForString { error ->
+            LibPushFFI.INSTANCE.push_verify_connection(
+                this.conn!!, vapid_key, registration_token, error)
         }
+        if length(response) {
+            val visited = JSONObject(response)
+            for (key in js("Object").keys(visited)) {
+                newEndpoints.put(key, visited[key] as String)
+            }
+        }
+        return newEndpoints
     }
 
     private inline fun <U> rustCall(callback: (RustError.ByReference) -> U): U {
@@ -134,164 +121,78 @@ class PushConnection(path: String, encryption_key: String? = null) : PushAPI, Au
         }
     }
 }
-// */
 
 /**
  * A class for providing the auth-related information needed to sync.
  * Note that this has the same shape as `SyncUnlockInfo` from logins - we
  * probably want a way of sharing these.
- * /
-class SyncAuthInfo (
-    val kid: String,
-    val fxaAccessToken: String,
-    val syncKey: String,
-    val tokenserverURL: String
+ */
+
+class KeyInfo {
+    val auth: String,
+    val p256dh: String,
+}
+
+class SubscriptionInfo (
+    val endpoint: String,
+    val keys: KeyInfo,
 )
-// */
 
 /**
  * An API for interacting with Push.
- * /
+ */
 interface PushAPI {
     /**
-     * Record a visit to a URL, or update meta information about page URL. See [VisitObservation].
-     * /
-    fun noteObservation(data: VisitObservation)
+     * Get the Subscription Info block
+     * 
+     * @param channelID Channel ID (UUID) for new subscription
+     * @param vapidKey optional base64 encoded EC P256v1 public key (used to secure the endpoint)
+     * @param registrationToken Native OS push registration ID
+     * @return a Subscription Info structure
+     */
+    fun getSubscriptionInfo(
+        channelID: String,
+        vapidKey: String,
+        registrationToken: String
+    ): SubscriptionInfo
 
     /**
-     * A way to search the internal database tailored for autocompletion purposes.
+     * Unsubscribe a given channelID
      *
-     * @param query a string to match results against.
-     * @param limit a maximum number of results to retrieve.
-     * @return a list of [SearchResult] matching the [query], in arbitrary order.
-     * /
-    fun queryAutocomplete(query: String, limit: Int): List<SearchResult>
+     * @param channelID Channel ID (UUID) for subscription to remove.
+     * @return bool.
+     */
+    fun unsubscribe(channelID: String): Boolean
 
     /**
-     * Maps a list of page URLs to a list of booleans indicating if each URL was visited.
-     * @param urls a list of page URLs about which "visited" information is being requested.
-     * @return a list of booleans indicating visited status of each
-     * corresponding page URI from [urls].
-     * /
-    fun getVisited(urls: List<String>): List<Boolean>
+     * Updates the Native OS push registration ID.
+     * @param registrationToken the new Native OS push registration ID.
+     * @return bool
+     */
+    fun update(registrationToken: String):Boolean
 
     /**
-     * Returns a list of visited URLs for a given time range.
+     * Verifies the connection state. NOTE: If the internal check fails, 
+     * endpoints will be re-registered and new endpoints will be returned for 
+     * known ChannelIDs
      *
-     * @param start beginning of the range, unix timestamp in milliseconds.
-     * @param end end of the range, unix timestamp in milliseconds.
-     * @param includeRemote boolean flag indicating whether or not to include remote visits. A visit
-     *  is (roughly) considered remote if it didn't originate on the current device.
-     * /
-    fun getVisitedUrlsInRange(start: Long, end: Long = Long.MAX_VALUE, includeRemote: Boolean = true): List<String>
+     * @param vapidKey optional base64 encoded EC P256v1 public key (used to secure the endpoint)
+     * @param registrationToken Native OS push registration ID
+     * @return Map of ChannelID: Endpoint, be sure to notify apps registered to given
+     *   channelIDs of the new Endpoint.
+     */
+    fun verifyConnection(
+        vapidKey: String, 
+        registrationToken: String
+    ): Map<String, String>
 
-    /**
-     * Syncs the history store.
-     *
-     * Note that this function blocks until the sync is complete, which may
-     * take some time due to the network etc. Because only 1 thread can be
-     * using a PushAPI at a time, it is recommended, but not enforced, that
-     * you use a separate PushAPI instance purely for syncing.
-     *
-     * /
-    fun sync(syncInfo: SyncAuthInfo)
 }
 
-open class PushException(msg: String): Exception(msg)
-open class InternalPanic(msg: String): PushException(msg)
-open class UrlParseFailed(msg: String): PushException(msg)
-open class InvalidPlaceInfo(msg: String): PushException(msg)
-open class PushConnectionBusy(msg: String): PushException(msg)
-
-@SuppressWarnings("MagicNumber")
-enum class VisitType(val type: Int) {
-    /** This isn't a visit, but a request to update meta data about a page * /
-    UPDATE_PLACE(-1),
-    /** This transition type means the user followed a link. * /
-    LINK(1),
-    /** This transition type means that the user typed the page's URL in the
-     *  URL bar or selected it from UI (URL bar autocomplete results, etc).
-     * /
-    TYPED(2),
-    // TODO: rest of docs
-    BOOKMARK(3),
-    EMBED(4),
-    REDIRECT_PERMANENT(5),
-    REDIRECT_TEMPORARY(6),
-    DOWNLOAD(7),
-    FRAMED_LINK(8),
-    RELOAD(9)
-}
-
-/**
- * Encapsulates either information about a visit to a page, or meta information about the page,
- * or both. Use [VisitType.UPDATE_PLACE] to differentiate an update from a visit.
- * /
-data class VisitObservation(
-    val url: String,
-    val visitType: VisitType,
-    val title: String? = null,
-    val isError: Boolean? = null,
-    val isRedirectSource: Boolean? = null,
-    val isPermanentRedirectSource: Boolean? = null,
-    /** Milliseconds * /
-    val at: Long? = null,
-    val referrer: String? = null,
-    val isRemote: Boolean? = null
-) {
-    fun toJSON(): JSONObject {
-        val o = JSONObject()
-        o.put("url", this.url)
-        // Absence of visit_type indicates that this is an update.
-        if (this.visitType != VisitType.UPDATE_PLACE) {
-            o.put("visit_type", this.visitType.type)
-        }
-        this.title?.let { o.put("title", it) }
-        this.isError?.let { o.put("is_error", it) }
-        this.isRedirectSource?.let { o.put("is_redirect_source", it) }
-        this.isPermanentRedirectSource?.let { o.put("is_permanent_redirect_source", it) }
-        this.at?.let { o.put("at", it) }
-        this.referrer?.let { o.put("referrer", it) }
-        this.isRemote?.let { o.put("is_remote", it) }
-        return o
-    }
-}
-
-data class SearchResult(
-    val searchString: String,
-    val url: String,
-    val title: String,
-    val frecency: Long,
-    val iconUrl: String? = null
-    // Skipping `reasons` for now...
-) {
-    companion object {
-        fun fromJSON(jsonObject: JSONObject): SearchResult {
-            fun stringOrNull(key: String): String? {
-                return try {
-                    jsonObject.getString(key)
-                } catch (e: JSONException) {
-                    null
-                }
-            }
-
-            return SearchResult(
-                searchString = jsonObject.getString("search_string"),
-                url = jsonObject.getString("url"),
-                title = jsonObject.getString("title"),
-                frecency = jsonObject.getLong("frecency"),
-                iconUrl = stringOrNull("icon_url")
-            )
-        }
-
-        fun fromJSONArray(jsonArrayText: String): List<SearchResult> {
-            val result: MutableList<SearchResult> = mutableListOf()
-            val array = JSONArray(jsonArrayText)
-            for (index in 0 until array.length()) {
-                result.add(fromJSON(array.getJSONObject(index)))
-            }
-            return result
-        }
-    }
-}
-*/
+open class PushError(msg: String): Exception(msg)
+open class InternalError(msg: String): PushError(msg)
+open class OpenSSLError(msg: String): PushError(msg)
+open class CommunicationError(msg: String): PushError(msg)
+open class CommunicationServerError(msg: String): PushError(msg)
+open class AlreadyRegisteredError(): PushError("")
+open class StorageError(msg: String): PushError(msg)
+open class StorageSqlError(msg: String): PushError(msg)

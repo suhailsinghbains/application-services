@@ -41,11 +41,11 @@ lazy_static::lazy_static! {
 /// `push_connection_destroy`. Returns null and logs on errors (for now).
 #[no_mangle]
 pub unsafe extern "C" fn push_connection_new(
+    application_id: *const c_char,
+    sender_id: *const c_char,
     server_host: *const c_char,
     socket_protocol: *const c_char,
     bridge_type: *const c_char,
-    application_id: *const c_char,
-    sender_id: *const c_char,
     error: &mut ExternError,
 ) -> u64 {
     log::debug!("push_connection_new {} {} -> {} {}=>{}",
@@ -53,10 +53,10 @@ pub unsafe extern "C" fn push_connection_new(
     // return this as a reference to the map since that map contains the actual handles that rust uses.
     // see ffi layer for details.
     CONNECTIONS.insert_with_result(error, || {
-        let host = ffi_support::rust_string_from_c(server_host);
+        let app_id = ffi_support::rust_string_from_c(application_id);
+        let host = ffi_support::opt_rust_string_from_c(server_host);
         let protocol = ffi_support::opt_rust_string_from_c(socket_protocol);
         let bridge = ffi_support::opt_rust_string_from_c(bridge_type);
-        let app_id = ffi_support::opt_rust_string_from_c(application_id);
         let sender = ffi_support::rust_string_from_c(sender_id);
         let key = ffi_support::opt_rust_string_from_c(encryption_key);
         let config = PushConfiguration{
@@ -132,13 +132,15 @@ pub unsafe extern "C" fn push_update(
 }
 
 // verify connection using channel list
+// Returns a JSON containing the new channelids => endpoints
+// NOTE: AC should notify processes associated with channelIDs of new endpoint
 #[no_mangle]
 pub unsafe extern "C" fn push_verify_connection(
     handle: u64,
     vapid_key: *const c_char,
     registration_token: *const c_char,
     error: &mut ExternError,
-) -> Option<HashMap<String, String>>{
+) -> *mut c_char{
     //TODO: Can you return an option hashmap and have it mean something? How to flatten?
     log::debug!("push_verify");
     CONNECTIONS.call_with_result_mut(error, handle, |conn| {
@@ -146,18 +148,20 @@ pub unsafe extern "C" fn push_verify_connection(
         let key = ffi_support::opt_rust_string_from_c(vapid_key);
         let reg_token = ffi_support::opt_rust_string_from_c(token);
         if ! conn.verify_connection(known_channels){
-            Some(conn.regenerate_endpoints(
+            if let Some(new_endpoints) = conn.regenerate_endpoints(
                 known_channels,
                 key,
                 reg_token
-                ))
+                ){
+                    return serde_json::to_string(new_endpoints)
+            }
         }
-        None
-    })
+        String::from("")
+    }
 }
 
 // TODO: modify these to be relevant.
 
-define_string_destructor!(places_destroy_string);
-define_handle_map_deleter!(CONNECTIONS, places_connection_destroy);
-define_box_destructor!(PlacesInterruptHandle, places_interrupt_handle_destroy);
+define_string_destructor!(push_destroy_string);
+define_handle_map_deleter!(CONNECTIONS, push_connection_destroy);
+// define_box_destructor!(PlacesInterruptHandle, places_interrupt_handle_destroy);
