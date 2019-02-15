@@ -5,6 +5,7 @@ pub struct PushConfiguration {
     pub http_protocol: Option<String>,
     pub bridge_type: Option<String>,
     pub application_id: Option<String>,
+    pub vapid_key: Option<String>,
     pub always_connect: bool,
     pub enabled: bool,
     pub ping_interval: u64,
@@ -21,11 +22,13 @@ impl Default for PushConfiguration {
             http_protocol: Some(String::from("https")),
             bridge_type: None,
             application_id: None,
+            vapid_key: None,
             always_connect: true,
             enabled: true,
             ping_interval: 1800,
             request_timeout: 1,
             sender_id: String::from(""),
+
         }
     }
 }

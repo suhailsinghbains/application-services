@@ -53,8 +53,6 @@ internal interface LibPushFFI : Library {
     fun push_get_subscription_info(
             conn: RawPushConnection,
             channel_id: String,
-            vapid_key: String?,
-            token: String?,
             out_err: RustError.ByReference
     ): Pointer
 
@@ -73,8 +71,6 @@ internal interface LibPushFFI : Library {
 
     fun push_verify_connection(
             conn: RawPushConnection,
-            vapid_key: String?,
-            registration_token: String?,
             out_err: RustError.ByReference
     ): Pointer
 

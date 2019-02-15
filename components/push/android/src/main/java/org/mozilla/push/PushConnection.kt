@@ -22,7 +22,7 @@ import java.io.File
  */
 class PushConnection(
     application_id: String,
-    sender_id:String,
+    sender_id: String,
     server_host: String?="push.service.mozilla.org", 
     socket_protocol: String?="https",
     bridge_type:String?="fcm",
@@ -53,12 +53,10 @@ class PushConnection(
 
     override fun getSubscriptionInfo(
         channelID: String,
-        vapidKey: String,
-        token: String,
         ): SubscriptionInfo {
         val json = rustCallForString { error ->
             LibPushFFI.INSTANCE.push_get_subscription_info(
-                this.conn!!, channelID, vapidKey, token, error)
+                this.conn!!, channelID, error)
         }
         return SubscriptionInfo.fromJSON(json)
     }
@@ -80,14 +78,11 @@ class PushConnection(
     }
 
 
-    override fun verifyConnection(
-        vapid_key: String,
-        registration_token: String,
-        ): Map<String, String> {
+    override fun verifyConnection(): Map<String, String> {
         val newEndpoints: MutableMap<String, String> = linkedMapOf();
         val response = rustCallForString { error ->
             LibPushFFI.INSTANCE.push_verify_connection(
-                this.conn!!, vapid_key, registration_token, error)
+                this.conn!!, error)
         }
         if length(response) {
             val visited = JSONObject(response)
@@ -146,14 +141,10 @@ interface PushAPI {
      * Get the Subscription Info block
      * 
      * @param channelID Channel ID (UUID) for new subscription
-     * @param vapidKey optional base64 encoded EC P256v1 public key (used to secure the endpoint)
-     * @param registrationToken Native OS push registration ID
      * @return a Subscription Info structure
      */
     fun getSubscriptionInfo(
         channelID: String,
-        vapidKey: String,
-        registrationToken: String
     ): SubscriptionInfo
 
     /**
@@ -176,15 +167,10 @@ interface PushAPI {
      * endpoints will be re-registered and new endpoints will be returned for 
      * known ChannelIDs
      *
-     * @param vapidKey optional base64 encoded EC P256v1 public key (used to secure the endpoint)
-     * @param registrationToken Native OS push registration ID
      * @return Map of ChannelID: Endpoint, be sure to notify apps registered to given
      *   channelIDs of the new Endpoint.
      */
-    fun verifyConnection(
-        vapidKey: String, 
-        registrationToken: String
-    ): Map<String, String>
+    fun verifyConnection(): Map<String, String>
 
 }
 
